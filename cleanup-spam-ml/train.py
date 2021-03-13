@@ -1,0 +1,148 @@
+from __future__ import division
+from utils import read_csv, fetch_data_from_github, import_local_dataset, fetch_from_remote
+from spam_keywords import get_keywords, get_spam_keywords
+
+import tensorflow as tf
+from tensorflow import keras
+import tensorflowjs as tfjs
+import numpy as np
+import tarfile
+import os, time, re, random
+
+def count_freq(pat, txt):
+    M = len(pat)
+    N = len(txt)
+    res = 0
+    # Pattern Matching
+    for i in range(N - M + 1):
+        j = 0
+        while j < M:
+            if (txt[i + j] != pat[j]):
+                break
+            j += 1
+
+        if (j == M):
+            res += 1
+            j = 0
+    return res
+
+
+def main():
+
+    def import_data():
+        spam_data, ham_data = import_local_dataset()
+        # csv_row -> [url, title, body, diffs, commit_messages, files_changed, docs_changed, commits, changes]
+
+        spam_text_corpus = []
+        for row in spam_data:
+            spam_text_corpus.append([row[1], row[2], row[4]])
+
+        ham_text_corpus = []
+        for row in ham_data:
+            ham_text_corpus.append([row[1], row[2], row[4]])
+
+
+        ## Fetch data from github
+        # This part has already been done and the data has been saved in the csv files_changed
+
+        # spam_data, ham_data = fetch_from_remote(updateLocal=True)
+        # spam_text_corpus = [[
+        #     pr_feature["title"], pr_feature["body"], pr_feature["commit_messages"]
+        # ] for pr_feature in spam_data if type(pr_feature) is dict]
+        # ham_text_corpus = [[
+        #     pr_feature["title"], pr_feature["body"], pr_feature["commit_messages"]
+        # ] for pr_feature in ham_data if type(pr_feature) is dict]
+
+
+        spam_keywords = get_spam_keywords(spam_text_corpus, ham_text_corpus)
+
+        print(spam_keywords)
+
+        spam_feature_array = []
+        ham_feature_array = []
+
+        for pr_feature in spam_data:
+            spam_feature_array.append([int(pr_feature[5]), int(pr_feature[6]), int(pr_feature[7]), int(pr_feature[8])])
+
+        for pr_feature in ham_data:
+            ham_feature_array.append([int(pr_feature[5]), int(pr_feature[6]), int(pr_feature[7]), int(pr_feature[8])])
+
+
+        for i in range(len(spam_text_corpus)):
+            num_spam_keywords = 0
+            text = re.sub('[^a-zA-Z0-9 \n\.]', ' ', get_keywords(spam_text_corpus[i]).lower())
+            for keyword in spam_keywords:
+                num_spam_keywords += count_freq(keyword, text)
+            spam_feature_array[i].append(num_spam_keywords)
+
+        for i in range(len(ham_text_corpus)):
+            num_spam_keywords = 0
+            text = re.sub('[^a-zA-Z0-9 \n\.]', ' ', get_keywords(ham_text_corpus[i]).lower())
+            for keyword in spam_keywords:
+                num_spam_keywords += count_freq(keyword, text)
+            ham_feature_array[i].append(num_spam_keywords)
+
+        random.shuffle(spam_feature_array)
+        random.shuffle(ham_feature_array)
+
+        TRAIN_PARTITION = 80
+        TRAIN_SIZE_SPAM = int(len(spam_feature_array) * (TRAIN_PARTITION / 100))
+        TEST_SIZE_SPAM = len(spam_feature_array) - TRAIN_SIZE_SPAM
+        TRAIN_SIZE_HAM = int(len(ham_feature_array) * (TRAIN_PARTITION / 100))
+        TEST_SIZE_HAM = len(ham_feature_array) - TRAIN_SIZE_HAM
+
+
+        features_array = spam_feature_array[:TRAIN_SIZE_SPAM] + ham_feature_array[:TRAIN_SIZE_HAM]
+        testing_array = spam_feature_array[-TEST_SIZE_SPAM:] + ham_feature_array[-TEST_SIZE_HAM:]
+
+        labels_array_train = []
+        for spam_pr in spam_feature_array[:TRAIN_SIZE_SPAM]:
+            labels_array_train.append([1])
+
+        for ham_pr in ham_feature_array[:TRAIN_SIZE_HAM]:
+            labels_array_train.append([0])
+
+        labels_array_test = []
+        for spam_pr in spam_feature_array[-TEST_SIZE_SPAM:]:
+            labels_array_test.append([1])
+
+        for ham_pr in ham_feature_array[-TEST_SIZE_HAM:]:
+            labels_array_test.append([0])
+
+        # print("loading training data")
+        trainX = np.array(features_array)
+        trainY = np.array(labels_array_train)
+        # print(trainX)
+        # print(trainY)
+
+        # print("loading test data")
+        testX = np.array(testing_array)
+        testY = np.array(labels_array_test)
+        return trainX,trainY,testX,testY
+
+
+    trainX,trainY,testX,testY = import_data()
+    feature_count = trainX.shape[1]
+    label_count = trainY.shape[1]
+
+
+    model = keras.Sequential([
+        keras.layers.Dense(5, activation=tf.nn.relu, input_shape=(5,)),
+        keras.layers.Dense(16, activation=tf.nn.relu),
+        keras.layers.Dense(16, activation=tf.nn.relu),
+        keras.layers.Dense(1, activation=tf.nn.sigmoid),
+    ])
+
+    model.compile(optimizer='adam',
+              loss='binary_crossentropy',
+              metrics=['accuracy'])
+
+    model.fit(trainX, trainY, epochs=500, batch_size=1)
+
+    test_loss, test_acc = model.evaluate(testX, testY)
+    print('Test accuracy:', test_acc)
+
+    tfjs.converters.save_keras_model(model, f'model/{int(time.time())}')
+
+if __name__ == "__main__":
+    main()
